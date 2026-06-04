@@ -36,8 +36,8 @@ type probeController struct {
 func newProbeController(run probeBatchRunner) *probeController {
 	return &probeController{
 		state: probeControlState{
-			Enabled:         false,
-			IntervalSeconds: 60,
+			Enabled:         true,
+			IntervalSeconds: 240,
 			BatchSize:       5,
 			Model:           "gpt-4o-mini",
 		},

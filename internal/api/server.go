@@ -30,6 +30,9 @@ type Server struct {
 func NewServer(store core.AccountStore, scheduler *core.Scheduler, checker *core.HealthChecker) http.Handler {
 	s := &Server{mux: http.NewServeMux(), store: store, scheduler: scheduler, checker: checker, probeJobs: newProbeJobStore(), authToken: os.Getenv("AAD_WEB_TOKEN")}
 	s.control = newProbeController(s.runProbeBatch)
+	if s.control.Snapshot().Enabled {
+		s.control.start()
+	}
 	s.routes()
 	return s
 }
@@ -251,6 +254,7 @@ func (s *Server) recordProbeStats(ctx context.Context, account core.Account, res
 			account.SuspectUntil = nil
 		} else if account.DispatchEnabled {
 			account.HealthStatus = core.HealthHealthy
+			account.Status = "active"
 		}
 	} else {
 		account.ProbeErrorCount++
@@ -267,8 +271,12 @@ func (s *Server) recordProbeStats(ctx context.Context, account core.Account, res
 		if account.LastErrorMessage == "" {
 			account.LastErrorMessage = "probe failed"
 		}
-		if !account.DispatchEnabled {
-			account.HealthStatus = core.HealthDisabled
+		account.DispatchEnabled = false
+		account.HealthStatus = core.HealthDisabled
+		account.Status = "error"
+		account.DisabledReason = account.LastErrorType
+		if account.DisabledAt == nil {
+			account.DisabledAt = &now
 		}
 	}
 	if err := s.store.UpdateAccount(ctx, account); err != nil {
@@ -282,32 +290,104 @@ func (s *Server) runProbeBatch(ctx context.Context, limit int, model string, tri
 	if err != nil {
 		return nil, err
 	}
-	sort.SliceStable(accounts, func(i, j int) bool {
-		left := accounts[i].LastProbeAt
-		right := accounts[j].LastProbeAt
-		if left == nil && right == nil {
-			return accounts[i].AccountID < accounts[j].AccountID
-		}
-		if left == nil {
-			return true
-		}
-		if right == nil {
-			return false
-		}
-		return left.Before(*right)
-	})
+	candidates := s.probeBatchCandidates(accounts)
+	if len(candidates) == 0 {
+		return []probeJob{}, nil
+	}
 
 	jobs := []probeJob{}
-	for _, account := range accounts {
-		if account.ProbePaused || s.probeJobs.IsAccountRunning(account.AccountID) {
-			continue
-		}
+	for _, account := range candidates {
 		jobs = append(jobs, s.startProbeJob(account.AccountID, model, trigger))
 		if len(jobs) >= limit {
 			break
 		}
 	}
 	return jobs, nil
+}
+
+func (s *Server) probeBatchCandidates(accounts []core.Account) []core.Account {
+	activePriority, hasActivePriority := lowestDispatchEnabledPriority(accounts)
+	groups := map[int][]core.Account{}
+	priorities := []int{}
+	seenPriority := map[int]bool{}
+
+	for _, account := range accounts {
+		if account.ProbePaused || s.probeJobs.IsAccountRunning(account.AccountID) {
+			continue
+		}
+		priority := normalizedProbePriority(account.Priority)
+		if hasActivePriority && priority > activePriority {
+			continue
+		}
+		groups[priority] = append(groups[priority], account)
+		if !seenPriority[priority] {
+			priorities = append(priorities, priority)
+			seenPriority[priority] = true
+		}
+	}
+	sort.Ints(priorities)
+	for _, priority := range priorities {
+		sort.SliceStable(groups[priority], func(i, j int) bool {
+			return probeAccountLess(groups[priority][i], groups[priority][j])
+		})
+	}
+	return roundRobinProbeCandidates(groups, priorities)
+}
+
+func lowestDispatchEnabledPriority(accounts []core.Account) (int, bool) {
+	best := 0
+	found := false
+	for _, account := range accounts {
+		if account.ProbePaused || !account.DispatchEnabled {
+			continue
+		}
+		priority := normalizedProbePriority(account.Priority)
+		if !found || priority < best {
+			best = priority
+			found = true
+		}
+	}
+	return best, found
+}
+
+func roundRobinProbeCandidates(groups map[int][]core.Account, priorities []int) []core.Account {
+	candidates := []core.Account{}
+	indexes := map[int]int{}
+	for {
+		added := false
+		for _, priority := range priorities {
+			index := indexes[priority]
+			if index >= len(groups[priority]) {
+				continue
+			}
+			candidates = append(candidates, groups[priority][index])
+			indexes[priority] = index + 1
+			added = true
+		}
+		if !added {
+			return candidates
+		}
+	}
+}
+
+func normalizedProbePriority(priority int) int {
+	if priority <= 0 {
+		return int(^uint(0) >> 1)
+	}
+	return priority
+}
+
+func probeAccountLess(left core.Account, right core.Account) bool {
+	if left.LastProbeAt == nil && right.LastProbeAt == nil {
+		return left.AccountID < right.AccountID
+	}
+	if left.LastProbeAt == nil {
+		return true
+	}
+	if right.LastProbeAt == nil {
+		return false
+	}
+	return left.LastProbeAt.Before(*right.LastProbeAt)
 }
 
 func (s *Server) getProbeJob(w http.ResponseWriter, r *http.Request) {

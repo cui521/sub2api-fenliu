@@ -92,8 +92,8 @@ func (s *Sub2PostgresStore) ListAccounts(ctx context.Context) ([]Account, error)
 		       error_message, created_at, updated_at, credentials, extra
 		from accounts
 		where deleted_at is null
-		  and position(convert_from(decode('e4b8ade8bdace7ab99', 'hex'), 'UTF8') in name) > 0
 		  and name not like '%@%'
+		  and coalesce(credentials->>'api_key', '') <> ''
 		order by id desc
 		limit 2000`)
 	if err != nil {
@@ -123,8 +123,8 @@ func (s *Sub2PostgresStore) GetAccount(ctx context.Context, accountID string) (A
 		from accounts
 		where id = $1
 		  and deleted_at is null
-		  and position(convert_from(decode('e4b8ade8bdace7ab99', 'hex'), 'UTF8') in name) > 0
-		  and name not like '%@%'`, id)
+		  and name not like '%@%'
+		  and coalesce(credentials->>'api_key', '') <> ''`, id)
 	account, err := scanSub2Account(row)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -200,8 +200,8 @@ func (s *Sub2PostgresStore) ListCandidates(ctx context.Context, req SelectReques
 		from accounts
 		where deleted_at is null
 		  and platform = $1
-		  and position(convert_from(decode('e4b8ade8bdace7ab99', 'hex'), 'UTF8') in name) > 0
 		  and name not like '%@%'
+		  and coalesce(credentials->>'api_key', '') <> ''
 		order by priority desc, id desc
 		limit 2000`, req.Platform)
 	if err != nil {
@@ -226,8 +226,8 @@ func (s *Sub2PostgresStore) ListProbeDue(ctx context.Context) ([]Account, error)
 		       error_message, created_at, updated_at, credentials, extra
 		from accounts
 		where deleted_at is null
-		  and position(convert_from(decode('e4b8ade8bdace7ab99', 'hex'), 'UTF8') in name) > 0
 		  and name not like '%@%'
+		  and coalesce(credentials->>'api_key', '') <> ''
 		  and coalesce((extra->'aad_health'->>'probe_paused')::boolean, false) = false
 		  and (
 		    (extra->'aad_health'->>'next_probe_at') is not null

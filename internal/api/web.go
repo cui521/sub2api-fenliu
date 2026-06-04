@@ -257,7 +257,7 @@ const indexHTML = `<!doctype html>
   <header>
     <div>
       <h1>SUB 渠道状态</h1>
-      <div class="header-sub">中转站账号检测 / 历史请求成功率 / 自动轮询控制</div>
+      <div class="header-sub">API 账号检测 / 历史请求成功率 / 自动轮询控制</div>
     </div>
     <div class="header-meta" id="health">服务检查中...</div>
   </header>
@@ -269,11 +269,11 @@ const indexHTML = `<!doctype html>
         <input id="model" value="gpt-4o-mini" title="手动检测时传入 sub2api 的模型">
         <button class="primary" onclick="loadAll()">刷新状态</button>
       </div>
-      <div class="hint">账号源：sub2api accounts；仅导入名称包含“中转站”且非邮箱账号；检测入口：sub2api 账号管理的检测连接。</div>
+      <div class="hint">账号源：sub2api accounts；导入所有 API key 凭据账号并排除邮箱账号；检测入口：sub2api 账号管理的检测连接。</div>
     </div>
 
     <div class="cards">
-      <div class="card"><div class="card-label">渠道总数</div><div class="card-value" id="stat-total">0</div><div class="card-foot">已过滤邮箱账号</div></div>
+      <div class="card"><div class="card-label">渠道总数</div><div class="card-value" id="stat-total">0</div><div class="card-foot">API 凭据账号</div></div>
       <div class="card"><div class="card-label">调度开启</div><div class="card-value" id="stat-on">0</div><div class="card-foot">sub2api schedulable</div></div>
       <div class="card"><div class="card-label">停止检测</div><div class="card-value" id="stat-paused">0</div><div class="card-foot">不参与自动轮询</div></div>
       <div class="card"><div class="card-label">历史请求成功率</div><div class="card-value" id="stat-rate">0%</div><div class="card-foot" id="stat-rate-foot">0 / 0</div></div>
@@ -283,7 +283,7 @@ const indexHTML = `<!doctype html>
     <section class="control-bar">
       <div class="control-fields">
         <strong>轮询检测</strong>
-        <label>间隔秒 <input id="control-interval" type="number" min="10" max="3600" value="60"></label>
+        <label>间隔秒 <input id="control-interval" type="number" min="10" max="3600" value="240"></label>
         <label>每轮个数 <input id="control-batch" type="number" min="1" max="50" value="5"></label>
         <label>模型 <input id="control-model" value="gpt-4o-mini"></label>
         <span class="hint" id="control-status">未开启</span>
@@ -306,6 +306,7 @@ const indexHTML = `<!doctype html>
             <tr>
               <th>渠道</th>
               <th>平台</th>
+              <th>优先级</th>
               <th>调度状态</th>
               <th>检测状态</th>
               <th>历史请求成功率</th>
@@ -417,7 +418,7 @@ const indexHTML = `<!doctype html>
     async function loadProbeControl() {
       try {
         probeControl = await api('/v1/probe-control', {timeoutMs: 10000});
-        document.getElementById('control-interval').value = probeControl.interval_seconds || 60;
+        document.getElementById('control-interval').value = probeControl.interval_seconds || 240;
         document.getElementById('control-batch').value = probeControl.batch_size || 5;
         document.getElementById('control-model').value = probeControl.model || 'gpt-4o-mini';
         renderProbeControl();
@@ -433,7 +434,7 @@ const indexHTML = `<!doctype html>
           headers: {'Content-Type': 'application/json'},
           body: JSON.stringify({
             enabled: enabled,
-            interval_seconds: Number(document.getElementById('control-interval').value || 60),
+            interval_seconds: Number(document.getElementById('control-interval').value || 240),
             batch_size: Number(document.getElementById('control-batch').value || 5),
             model: document.getElementById('control-model').value.trim() || 'gpt-4o-mini'
           }),
@@ -487,7 +488,7 @@ const indexHTML = `<!doctype html>
     function render() {
       const keyword = document.getElementById('search').value.trim().toLowerCase();
       const filtered = accounts.filter(account => {
-        const text = [account.account_id, account.name, account.platform, account.health_status, account.last_error_type, account.last_error_message].join(' ').toLowerCase();
+        const text = [account.account_id, account.name, account.platform, account.priority, account.health_status, account.last_error_type, account.last_error_message].join(' ').toLowerCase();
         return !keyword || text.includes(keyword);
       });
       const totals = successTotals(accounts);
@@ -501,7 +502,7 @@ const indexHTML = `<!doctype html>
 
       const target = document.getElementById('accounts');
       if (!filtered.length) {
-        target.innerHTML = '<tr><td colspan="8" class="empty">暂无渠道账号，或搜索条件没有匹配结果</td></tr>';
+        target.innerHTML = '<tr><td colspan="9" class="empty">暂无渠道账号，或搜索条件没有匹配结果</td></tr>';
         return;
       }
       target.innerHTML = filtered.map(account => {
@@ -511,6 +512,7 @@ const indexHTML = `<!doctype html>
         return '<tr>' +
           '<td><div class="name">' + esc(account.name || account.account_id) + '</div><div class="sub mono">ID ' + esc(account.account_id) + '</div></td>' +
           '<td><span class="badge running">' + esc(account.platform || '-') + '</span></td>' +
+          '<td><span class="badge paused">P' + esc(formatPriority(account.priority)) + '</span></td>' +
           '<td><div class="status-stack"><span class="badge ' + (account.dispatch_enabled ? 'on' : 'off') + '">' + (account.dispatch_enabled ? '开启' : '关闭') + '</span><span class="sub">' + esc(account.status || '-') + '</span></div></td>' +
           '<td><div class="status-stack"><span class="badge ' + probeClass + '">' + probeText + '</span><span class="sub">' + esc(account.health_status || 'unknown') + '</span></div></td>' +
           '<td class="rate-cell">' + renderRate(account) + '</td>' +
@@ -641,6 +643,10 @@ const indexHTML = `<!doctype html>
     }
 
     function formatTime(value) { return value ? new Date(value).toLocaleString() : '-'; }
+    function formatPriority(value) {
+      const priority = Number(value || 0);
+      return priority > 0 ? priority : '-';
+    }
     function formatElapsed(value) {
       const ms = Number(value || 0);
       if (ms < 1000) return ms + 'ms';

@@ -2,6 +2,9 @@ account-auto-dispatch-source.tar.gz
 account-auto-dispatch-source.zip
 deploy_remote.sh
 verify_remote.sh
+update_token_remote.sh
+verify_current_remote.sh
+verify_priority_remote.sh
 data/
 *.log
 *.tmp
