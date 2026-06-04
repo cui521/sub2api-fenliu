@@ -5,6 +5,9 @@ verify_remote.sh
 update_token_remote.sh
 verify_current_remote.sh
 verify_priority_remote.sh
+diagnose_recovery_remote.sh
+verify_recovery_fix_remote.sh
+check_recovery_state_remote.sh
 data/
 *.log
 *.tmp

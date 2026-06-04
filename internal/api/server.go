@@ -16,6 +16,7 @@ import (
 
 const probeJobTimeout = 10 * time.Second
 const dispatchEnableSuccessThreshold = 2
+const dispatchDisableFailureThreshold = 2
 
 type Server struct {
 	mux       *http.ServeMux
@@ -34,6 +35,7 @@ func NewServer(store core.AccountStore, scheduler *core.Scheduler, checker *core
 		s.control.start()
 	}
 	s.routes()
+	go s.reconcileRecoverableAccounts()
 	return s
 }
 
@@ -233,6 +235,7 @@ func (s *Server) runProbeJob(jobID string, accountID string, model string, trigg
 
 func (s *Server) recordProbeStats(ctx context.Context, account core.Account, result core.ProbeResult) core.Account {
 	now := time.Now().UTC()
+	wasDispatchEnabled := account.DispatchEnabled
 	account.ProbeTotalCount++
 	account.LastProbeAt = &now
 	if result.Success {
@@ -244,21 +247,17 @@ func (s *Server) recordProbeStats(ctx context.Context, account core.Account, res
 		account.LastErrorType = ""
 		account.LastErrorCode = ""
 		account.LastErrorMessage = ""
-		if !account.DispatchEnabled && account.ConsecutiveSuccesses >= dispatchEnableSuccessThreshold {
-			account.DispatchEnabled = true
-			account.HealthStatus = core.HealthHealthy
-			account.Status = "active"
-			account.DisabledReason = ""
-			account.DisabledAt = nil
-			account.NextProbeAt = nil
-			account.SuspectUntil = nil
-		} else if account.DispatchEnabled {
+		if shouldEnableRecoveredDispatch(account) {
+			enableRecoveredDispatch(&account)
+		} else if wasDispatchEnabled {
 			account.HealthStatus = core.HealthHealthy
 			account.Status = "active"
 		}
 	} else {
 		account.ProbeErrorCount++
-		account.ConsecutiveSuccesses = 0
+		if wasDispatchEnabled {
+			account.ConsecutiveSuccesses = 0
+		}
 		account.ConsecutiveFailures++
 		account.ProbeFailureCount++
 		account.LastFailedAt = &now
@@ -271,18 +270,64 @@ func (s *Server) recordProbeStats(ctx context.Context, account core.Account, res
 		if account.LastErrorMessage == "" {
 			account.LastErrorMessage = "probe failed"
 		}
-		account.DispatchEnabled = false
-		account.HealthStatus = core.HealthDisabled
-		account.Status = "error"
-		account.DisabledReason = account.LastErrorType
-		if account.DisabledAt == nil {
-			account.DisabledAt = &now
+		if wasDispatchEnabled && account.ConsecutiveFailures < dispatchDisableFailureThreshold {
+			account.HealthStatus = core.HealthSuspect
+			account.Status = "active"
+			account.DisabledReason = ""
+		} else {
+			account.DispatchEnabled = false
+			account.HealthStatus = core.HealthDisabled
+			account.Status = "error"
+			account.DisabledReason = account.LastErrorType
+			if account.DisabledAt == nil {
+				account.DisabledAt = &now
+			}
 		}
 	}
 	if err := s.store.UpdateAccount(ctx, account); err != nil {
 		log.Printf("probe stats update failed account_id=%s: %v", account.AccountID, err)
 	}
 	return account
+}
+
+func (s *Server) reconcileRecoverableAccounts() {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	accounts, err := s.store.ListAccounts(ctx)
+	if err != nil {
+		log.Printf("recoverable account reconciliation list failed: %v", err)
+		return
+	}
+	for _, account := range accounts {
+		if !shouldEnableRecoveredDispatch(account) {
+			continue
+		}
+		enableRecoveredDispatch(&account)
+		if err := s.store.UpdateAccount(ctx, account); err != nil {
+			log.Printf("recoverable account reconciliation update failed account_id=%s: %v", account.AccountID, err)
+		}
+	}
+}
+
+func shouldEnableRecoveredDispatch(account core.Account) bool {
+	if account.DispatchEnabled || account.ProbePaused || account.ProbeSuccessCount < dispatchEnableSuccessThreshold {
+		return false
+	}
+	return true
+}
+
+func enableRecoveredDispatch(account *core.Account) {
+	account.DispatchEnabled = true
+	account.HealthStatus = core.HealthHealthy
+	account.Status = "active"
+	account.DisabledReason = ""
+	account.DisabledAt = nil
+	account.NextProbeAt = nil
+	account.SuspectUntil = nil
+	if account.ConsecutiveSuccesses < dispatchEnableSuccessThreshold {
+		account.ConsecutiveSuccesses = dispatchEnableSuccessThreshold
+	}
 }
 
 func (s *Server) runProbeBatch(ctx context.Context, limit int, model string, trigger string) ([]probeJob, error) {
