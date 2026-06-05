@@ -5,9 +5,11 @@ import (
 	"crypto/subtle"
 	"encoding/json"
 	"log"
+	"math"
 	"net/http"
 	"os"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -17,19 +19,30 @@ import (
 const probeJobTimeout = 10 * time.Second
 const dispatchEnableSuccessThreshold = 2
 const dispatchDisableFailureThreshold = 2
+const storedProbeHistoryLimit = 60
+const publicProbeHistoryLimit = 20
 
 type Server struct {
-	mux       *http.ServeMux
-	store     core.AccountStore
-	scheduler *core.Scheduler
-	checker   *core.HealthChecker
-	probeJobs *probeJobStore
-	control   *probeController
-	authToken string
+	mux               *http.ServeMux
+	store             core.AccountStore
+	scheduler         *core.Scheduler
+	checker           *core.HealthChecker
+	probeJobs         *probeJobStore
+	control           *probeController
+	authToken         string
+	allowUnsafeNoAuth bool
 }
 
 func NewServer(store core.AccountStore, scheduler *core.Scheduler, checker *core.HealthChecker) http.Handler {
-	s := &Server{mux: http.NewServeMux(), store: store, scheduler: scheduler, checker: checker, probeJobs: newProbeJobStore(), authToken: os.Getenv("AAD_WEB_TOKEN")}
+	s := &Server{
+		mux:               http.NewServeMux(),
+		store:             store,
+		scheduler:         scheduler,
+		checker:           checker,
+		probeJobs:         newProbeJobStore(),
+		authToken:         os.Getenv("AAD_WEB_TOKEN"),
+		allowUnsafeNoAuth: envBool("AAD_ALLOW_UNSAFE_NO_AUTH"),
+	}
 	s.control = newProbeController(s.runProbeBatch)
 	if s.control.Snapshot().Enabled {
 		s.control.start()
@@ -58,8 +71,17 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if !s.isAuthorized(r) {
 		if r.URL.Path == "/" || strings.Contains(r.Header.Get("Accept"), "text/html") {
 			w.Header().Set("Content-Type", "text/html; charset=utf-8")
-			w.WriteHeader(http.StatusUnauthorized)
-			_, _ = w.Write([]byte(loginHTML))
+			if s.authToken == "" {
+				w.WriteHeader(http.StatusServiceUnavailable)
+				_, _ = w.Write([]byte(authSetupHTML))
+			} else {
+				w.WriteHeader(http.StatusUnauthorized)
+				_, _ = w.Write([]byte(loginHTML))
+			}
+			return
+		}
+		if s.authToken == "" {
+			writeError(w, http.StatusServiceUnavailable, "AAD_WEB_TOKEN is required for admin APIs")
 			return
 		}
 		writeError(w, http.StatusUnauthorized, "unauthorized")
@@ -69,8 +91,11 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) isAuthorized(r *http.Request) bool {
-	if s.authToken == "" || r.URL.Path == "/healthz" {
+	if isPublicPath(r.URL.Path) {
 		return true
+	}
+	if s.authToken == "" {
+		return s.allowUnsafeNoAuth
 	}
 	candidates := []string{
 		r.Header.Get("X-AAD-Token"),
@@ -86,9 +111,24 @@ func (s *Server) isAuthorized(r *http.Request) bool {
 	return false
 }
 
+func isPublicPath(path string) bool {
+	return path == "/healthz" || path == "/status" || path == "/v1/public/status"
+}
+
+func envBool(key string) bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv(key))) {
+	case "1", "true", "yes", "on":
+		return true
+	default:
+		return false
+	}
+}
+
 func (s *Server) routes() {
 	s.mux.HandleFunc("GET /", s.index)
+	s.mux.HandleFunc("GET /status", s.statusPage)
 	s.mux.HandleFunc("GET /healthz", s.healthz)
+	s.mux.HandleFunc("GET /v1/public/status", s.publicStatus)
 	s.mux.HandleFunc("POST /v1/accounts", s.createAccount)
 	s.mux.HandleFunc("GET /v1/accounts", s.listAccounts)
 	s.mux.HandleFunc("GET /v1/dispatch/accounts/", s.getAccountHealth)
@@ -109,8 +149,168 @@ func (s *Server) index(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write([]byte(indexHTML))
 }
 
+func (s *Server) statusPage(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	_, _ = w.Write([]byte(statusHTML))
+}
+
 func (s *Server) healthz(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+type publicStatusResponse struct {
+	Stations []publicStation `json:"stations"`
+}
+
+type publicStation struct {
+	Name        string   `json:"name"`
+	Groups      []string `json:"groups"`
+	State       string   `json:"state"`
+	History     []string `json:"history"`
+	SuccessRate *float64 `json:"success_rate,omitempty"`
+}
+
+func (s *Server) publicStatus(w http.ResponseWriter, r *http.Request) {
+	accounts, err := s.store.ListAccounts(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "status unavailable")
+		return
+	}
+
+	visibleAccounts := make([]core.Account, 0, len(accounts))
+	for _, account := range accounts {
+		if account.ProbePaused {
+			continue
+		}
+		visibleAccounts = append(visibleAccounts, account)
+	}
+	sort.SliceStable(visibleAccounts, func(i, j int) bool {
+		if visibleAccounts[i].Priority != visibleAccounts[j].Priority {
+			return visibleAccounts[i].Priority < visibleAccounts[j].Priority
+		}
+		return accountIDLess(visibleAccounts[i].AccountID, visibleAccounts[j].AccountID)
+	})
+
+	resp := publicStatusResponse{
+		Stations: make([]publicStation, 0, len(visibleAccounts)),
+	}
+	for i, account := range visibleAccounts {
+		resp.Stations = append(resp.Stations, publicStationFromAccount(account, i+1))
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+func accountIDLess(left string, right string) bool {
+	leftID, leftErr := strconv.ParseInt(left, 10, 64)
+	rightID, rightErr := strconv.ParseInt(right, 10, 64)
+	if leftErr == nil && rightErr == nil {
+		return leftID < rightID
+	}
+	return left < right
+}
+
+func publicStationFromAccount(account core.Account, displayIndex int) publicStation {
+	state := "offline"
+	if account.DispatchEnabled {
+		switch account.HealthStatus {
+		case core.HealthHealthy, "":
+			state = "online"
+		case core.HealthSuspect, core.HealthProbing:
+			state = "degraded"
+		default:
+			state = "degraded"
+		}
+	} else if account.HealthStatus == core.HealthSuspect || account.HealthStatus == core.HealthProbing {
+		state = "degraded"
+	}
+
+	return publicStation{
+		Name:        "\u63a5\u53e3" + strconv.Itoa(displayIndex) + "\u72b6\u6001",
+		Groups:      publicGroupNames(account),
+		State:       state,
+		History:     publicProbeHistory(account, publicProbeHistoryLimit),
+		SuccessRate: publicSuccessRate(account),
+	}
+}
+
+func publicGroupNames(account core.Account) []string {
+	source := account.GroupNames
+	if len(source) == 0 && strings.TrimSpace(account.GroupID) != "" {
+		source = []string{account.GroupID}
+	}
+	out := make([]string, 0, len(source))
+	seen := map[string]bool{}
+	for _, group := range source {
+		group = strings.TrimSpace(group)
+		if group == "" || seen[group] {
+			continue
+		}
+		out = append(out, group)
+		seen[group] = true
+	}
+	if len(out) == 0 {
+		return []string{"\u9ed8\u8ba4\u5206\u7ec4"}
+	}
+	return out
+}
+
+func publicSuccessRate(account core.Account) *float64 {
+	if account.ProbeTotalCount <= 0 {
+		return nil
+	}
+	value := float64(account.ProbeSuccessCount) * 100 / float64(account.ProbeTotalCount)
+	value = math.Round(value*100) / 100
+	return &value
+}
+
+func publicProbeHistory(account core.Account, limit int) []string {
+	if limit <= 0 {
+		return []string{}
+	}
+	if len(account.ProbeHistory) > 0 {
+		start := len(account.ProbeHistory) - limit
+		if start < 0 {
+			start = 0
+		}
+		out := make([]string, 0, len(account.ProbeHistory)-start)
+		for _, item := range account.ProbeHistory[start:] {
+			if item.Success {
+				out = append(out, "success")
+			} else {
+				out = append(out, "failed")
+			}
+		}
+		return out
+	}
+	return synthesizedProbeHistory(account, limit)
+}
+
+func synthesizedProbeHistory(account core.Account, limit int) []string {
+	total := account.ProbeTotalCount
+	if total <= 0 {
+		return []string{}
+	}
+	if total > limit {
+		total = limit
+	}
+	failures := account.ProbeErrorCount
+	if failures < 0 {
+		failures = 0
+	}
+	if failures > total {
+		failures = total
+	}
+	out := make([]string, 0, total)
+	for i := 0; i < total; i++ {
+		before := i * failures / total
+		after := (i + 1) * failures / total
+		if after > before {
+			out = append(out, "failed")
+		} else {
+			out = append(out, "success")
+		}
+	}
+	return out
 }
 
 func (s *Server) createAccount(w http.ResponseWriter, r *http.Request) {
@@ -238,6 +438,7 @@ func (s *Server) recordProbeStats(ctx context.Context, account core.Account, res
 	wasDispatchEnabled := account.DispatchEnabled
 	account.ProbeTotalCount++
 	account.LastProbeAt = &now
+	account.ProbeHistory = appendProbeHistory(account.ProbeHistory, result.Success, now)
 	if result.Success {
 		account.ProbeSuccessCount++
 		account.ConsecutiveSuccesses++
@@ -288,6 +489,14 @@ func (s *Server) recordProbeStats(ctx context.Context, account core.Account, res
 		log.Printf("probe stats update failed account_id=%s: %v", account.AccountID, err)
 	}
 	return account
+}
+
+func appendProbeHistory(history []core.ProbeHistoryEntry, success bool, at time.Time) []core.ProbeHistoryEntry {
+	history = append(history, core.ProbeHistoryEntry{Success: success, At: at})
+	if len(history) > storedProbeHistoryLimit {
+		history = history[len(history)-storedProbeHistoryLimit:]
+	}
+	return history
 }
 
 func (s *Server) reconcileRecoverableAccounts() {

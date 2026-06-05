@@ -26,6 +26,428 @@ const loginHTML = `<!doctype html>
 </body>
 </html>`
 
+const authSetupHTML = `<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>管理端未启用</title>
+  <style>
+    body { margin: 0; min-height: 100vh; display: grid; place-items: center; background: #f4f7fb; color: #111827; font-family: "Noto Sans SC", "Microsoft YaHei", Arial, sans-serif; }
+    .box { width: min(520px, calc(100vw - 32px)); padding: 26px; border: 1px solid #d8e0ea; border-radius: 8px; background: #fff; box-shadow: 0 14px 34px rgba(15, 23, 42, .08); }
+    h1 { margin: 0 0 10px; font-size: 20px; }
+    p { margin: 0 0 12px; color: #667085; font-size: 14px; line-height: 1.7; }
+    code { padding: 2px 5px; border-radius: 5px; background: #eef2f7; color: #111827; }
+    a { color: #2563eb; font-weight: 800; text-decoration: none; }
+  </style>
+</head>
+<body>
+  <div class="box">
+    <h1>管理端未启用</h1>
+    <p>为了避免公网暴露管理接口，服务端必须配置 <code>AAD_WEB_TOKEN</code> 后才能访问后台。</p>
+    <p>公开只读状态页仍可访问：<a href="/status">/status</a></p>
+  </div>
+</body>
+</html>`
+
+const statusHTML = `<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Sub2API - &#x4e2d;&#x8f6c;&#x72b6;&#x6001;</title>
+  <style>
+    :root {
+      --bg: #f9fafb;
+      --ink: #111827;
+      --muted: #6b7280;
+      --panel: #ffffff;
+      --line: #e5e7eb;
+      --soft: #f8fafc;
+      --online: #16a34a;
+      --online-bg: #f0fdf4;
+      --online-line: #bbf7d0;
+      --degraded: #d97706;
+      --degraded-bg: #fffbeb;
+      --degraded-line: #fde68a;
+      --offline: #dc2626;
+      --offline-bg: #fef2f2;
+      --offline-line: #fecaca;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      color: var(--ink);
+      background: var(--bg);
+      font-family: Inter, "Noto Sans SC", "Microsoft YaHei", "PingFang SC", Arial, sans-serif;
+      -webkit-font-smoothing: antialiased;
+    }
+    .shell {
+      width: min(1120px, calc(100% - 32px));
+      margin: 0 auto;
+      padding: 32px 0 40px;
+    }
+    .header {
+      display: flex;
+      align-items: flex-end;
+      justify-content: space-between;
+      gap: 16px;
+      margin-bottom: 18px;
+    }
+    h1 {
+      margin: 0;
+      font-size: 24px;
+      line-height: 1.2;
+      font-weight: 750;
+      letter-spacing: 0;
+    }
+    .subtitle {
+      margin-top: 6px;
+      color: var(--muted);
+      font-size: 13px;
+    }
+    .refresh {
+      color: var(--muted);
+      font-size: 12px;
+      white-space: nowrap;
+    }
+    .panel {
+      overflow: hidden;
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      box-shadow: 0 1px 3px rgba(0, 0, 0, .04), 0 1px 2px rgba(0, 0, 0, .06);
+    }
+    .panel-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      min-height: 52px;
+      padding: 14px 18px;
+      border-bottom: 1px solid var(--line);
+      background: linear-gradient(180deg, #ffffff, #f8fafc);
+    }
+    .panel-title {
+      font-size: 14px;
+      font-weight: 700;
+    }
+    .count {
+      color: var(--muted);
+      font-size: 12px;
+    }
+    .groups {
+      display: flex;
+      flex-direction: column;
+      gap: 18px;
+      padding: 14px;
+    }
+    .group-section {
+      min-width: 0;
+    }
+    .group-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      margin: 0 2px 10px;
+    }
+    .group-name {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      font-size: 14px;
+      font-weight: 800;
+    }
+    .group-count {
+      color: var(--muted);
+      font-size: 12px;
+      white-space: nowrap;
+    }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+      gap: 12px;
+    }
+    .station {
+      min-height: 172px;
+      padding: 16px;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      background: var(--panel);
+      transition: border-color .2s ease, box-shadow .2s ease, transform .2s ease;
+    }
+    .station:hover {
+      border-color: #d1d5db;
+      box-shadow: 0 8px 22px rgba(15, 23, 42, .06);
+      transform: translateY(-1px);
+    }
+    .station-top {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+    }
+    .name {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      font-size: 15px;
+      font-weight: 700;
+    }
+    .dot {
+      width: 10px;
+      height: 10px;
+      flex: 0 0 auto;
+      border-radius: 999px;
+      background: var(--offline);
+      box-shadow: 0 0 0 4px var(--offline-bg);
+    }
+    .station.online .dot { background: var(--online); box-shadow: 0 0 0 4px var(--online-bg); }
+    .station.degraded .dot { background: var(--degraded); box-shadow: 0 0 0 4px var(--degraded-bg); }
+    .station.offline .dot { background: var(--offline); box-shadow: 0 0 0 4px var(--offline-bg); }
+    .tags {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      margin-top: 12px;
+    }
+    .tag {
+      max-width: 100%;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      padding: 4px 8px;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      color: var(--muted);
+      background: var(--soft);
+      font-size: 12px;
+      line-height: 1;
+      font-weight: 700;
+    }
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      height: 28px;
+      margin-top: 18px;
+      padding: 0 10px;
+      border-radius: 8px;
+      border: 1px solid transparent;
+      font-size: 13px;
+      font-weight: 700;
+      white-space: nowrap;
+    }
+    .badge.online { color: var(--online); background: var(--online-bg); border-color: var(--online-line); }
+    .badge.degraded { color: var(--degraded); background: var(--degraded-bg); border-color: var(--degraded-line); }
+    .badge.offline { color: var(--offline); background: var(--offline-bg); border-color: var(--offline-line); }
+    .station-meta {
+      display: flex;
+      align-items: flex-end;
+      justify-content: space-between;
+      gap: 12px;
+      margin-top: 18px;
+      padding-top: 14px;
+      border-top: 1px solid var(--line);
+    }
+    .meta-label {
+      color: var(--muted);
+      font-size: 12px;
+    }
+    .success-rate {
+      color: var(--online);
+      font-size: 26px;
+      line-height: 1;
+      font-weight: 800;
+      letter-spacing: 0;
+      white-space: nowrap;
+    }
+    .history-wrap {
+      margin-top: 14px;
+      padding: 12px;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      background: var(--soft);
+      opacity: 1;
+      visibility: visible;
+    }
+    .history-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      color: var(--muted);
+      font-size: 12px;
+      margin-bottom: 8px;
+    }
+    .history {
+      display: grid;
+      grid-template-columns: repeat(20, minmax(6px, 1fr));
+      align-items: center;
+      justify-items: center;
+      gap: 4px;
+      min-height: 18px;
+      opacity: 1;
+      visibility: visible;
+    }
+    .bar {
+      display: block;
+      width: 100%;
+      max-width: 10px;
+      min-width: 6px;
+      height: auto;
+      aspect-ratio: 1;
+      border-radius: 999px;
+      background: #e5e7eb;
+      opacity: 1;
+      visibility: visible;
+      box-shadow: inset 0 0 0 1px rgba(15, 23, 42, .08);
+    }
+    .bar.success { background: #10b981; box-shadow: 0 0 0 3px rgba(16, 185, 129, .12); }
+    .bar.failed { background: #ef4444; box-shadow: 0 0 0 3px rgba(239, 68, 68, .12); }
+    .bar.empty { background: #e5e7eb; }
+    .empty, .error {
+      margin: 14px;
+      padding: 30px 16px;
+      color: var(--muted);
+      text-align: center;
+      background: var(--soft);
+      border: 1px dashed #d1d5db;
+      border-radius: 12px;
+    }
+    @media (max-width: 760px) {
+      .shell { width: min(100% - 24px, 1120px); padding-top: 22px; }
+      .header { align-items: flex-start; flex-direction: column; }
+      .refresh { white-space: normal; }
+      .groups { padding: 12px; gap: 16px; }
+      .grid { grid-template-columns: 1fr; }
+      .history { grid-template-columns: repeat(20, minmax(8px, 1fr)); }
+    }
+  </style>
+</head>
+<body>
+  <main class="shell">
+    <header class="header">
+      <div>
+        <h1>Sub2API &#x4e2d;&#x8f6c;&#x72b6;&#x6001;</h1>
+        <div class="subtitle">&#x516c;&#x5f00;&#x76d1;&#x63a7;&#x89c6;&#x56fe;</div>
+      </div>
+      <div class="refresh" id="refresh">正在刷新...</div>
+    </header>
+    <section class="panel">
+      <div class="panel-head">
+        <div class="panel-title">&#x63a5;&#x53e3;&#x72b6;&#x6001;</div>
+        <div class="count" id="count">0 &#x4e2a;&#x63a5;&#x53e3;</div>
+      </div>
+      <div class="groups" id="stations"></div>
+    </section>
+  </main>
+  <script>
+    async function loadStatus() {
+      try {
+        const res = await fetch('/v1/public/status', {cache: 'no-store'});
+        if (!res.ok) throw new Error('status unavailable');
+        const data = await res.json();
+        render(data);
+        document.getElementById('refresh').textContent = '\u521a\u521a\u5237\u65b0';
+      } catch (err) {
+        document.getElementById('count').textContent = '0 \u4e2a\u63a5\u53e3';
+        document.getElementById('refresh').textContent = '\u5237\u65b0\u5931\u8d25';
+        document.getElementById('stations').innerHTML = '<div class="error">\u72b6\u6001\u6682\u65f6\u4e0d\u53ef\u7528</div>';
+      }
+    }
+
+    function render(data) {
+      const stations = Array.isArray(data.stations) ? data.stations : [];
+      const target = document.getElementById('stations');
+      if (!stations.length) {
+        document.getElementById('count').textContent = '0 \u4e2a\u63a5\u53e3';
+        target.innerHTML = '<div class="empty">\u6682\u65e0\u63a5\u53e3\u72b6\u6001</div>';
+        return;
+      }
+      const grouped = groupStations(stations);
+      document.getElementById('count').textContent = stations.length + ' \u4e2a\u63a5\u53e3 / ' + grouped.length + ' \u4e2a\u5206\u7ec4';
+      target.innerHTML = grouped.map(function(group) {
+        return '<section class="group-section">' +
+          '<div class="group-head"><div class="group-name">' + esc(group.name) + '</div><div class="group-count">' + group.items.length + ' \u4e2a\u63a5\u53e3</div></div>' +
+          '<div class="grid">' + group.items.map(renderStation).join('') + '</div>' +
+          '</section>';
+      }).join('');
+    }
+
+    function groupStations(stations) {
+      const groups = [];
+      const seen = new Map();
+      stations.forEach(function(station) {
+        stationGroupNames(station).forEach(function(name) {
+          if (!seen.has(name)) {
+            const group = {name: name, items: []};
+            seen.set(name, group);
+            groups.push(group);
+          }
+          seen.get(name).items.push(station);
+        });
+      });
+      return groups;
+    }
+
+    function renderStation(station) {
+      const state = station.state === 'online' || station.state === 'degraded' || station.state === 'offline' ? station.state : 'offline';
+      const history = Array.isArray(station.history) ? station.history.slice(-20) : [];
+      const rate = typeof station.success_rate === 'number' ? station.success_rate.toFixed(2).replace(/\.?0+$/, '') + '%' : '-';
+      const groups = stationGroupNames(station);
+      return '<article class="station ' + state + '">' +
+        '<div class="station-top"><div class="name">' + esc(station.name || '\u63a5\u53e3\u72b6\u6001') + '</div><span class="dot"></span></div>' +
+        '<div class="tags">' + groups.map(function(group) { return '<span class="tag">' + esc(group) + '</span>'; }).join('') + '</div>' +
+        '<span class="badge ' + state + '">' + esc(statusText(state)) + '</span>' +
+        '<div class="station-meta"><div class="meta-label">\u53ef\u7528\u7387</div><div class="success-rate">' + esc(rate) + '</div></div>' +
+        '<div class="history-wrap">' +
+          '<div class="history-head"><span>\u8fd1 20 \u6b21\u68c0\u6d4b</span><span>' + history.length + '/20</span></div>' +
+          '<div class="history">' + renderHistory(history) + '</div>' +
+        '</div>' +
+        '</article>';
+    }
+
+    function stationGroupNames(station) {
+      const names = Array.isArray(station.groups) ? station.groups : [];
+      const out = [];
+      names.forEach(function(name) {
+        name = String(name == null ? '' : name).trim();
+        if (name && !out.includes(name)) out.push(name);
+      });
+      return out.length ? out : ['\u9ed8\u8ba4\u5206\u7ec4'];
+    }
+
+    function renderHistory(history) {
+      const padded = Array(Math.max(0, 20 - history.length)).fill('empty').concat(history);
+      return padded.map(function(item) {
+        const cls = item === 'success' || item === 'failed' ? item : 'empty';
+        return '<span class="bar ' + cls + '"></span>';
+      }).join('');
+    }
+
+    function statusText(state) {
+      if (state === 'online') return '\u6b63\u5e38';
+      if (state === 'degraded') return '\u89c2\u5bdf\u4e2d';
+      return '\u4e0d\u53ef\u7528';
+    }
+
+    function esc(value) {
+      return String(value == null ? '' : value).replace(/[&<>"']/g, function(s) {
+        return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[s];
+      });
+    }
+
+    loadStatus();
+    setInterval(loadStatus, 10000);
+  </script>
+</body>
+</html>`
+
 const indexHTML = `<!doctype html>
 <html lang="zh-CN">
 <head>
@@ -160,7 +582,7 @@ const indexHTML = `<!doctype html>
     }
     .panel-title strong { font-size: 15px; }
     .table-wrap { overflow: auto; }
-    table { width: 100%; border-collapse: separate; border-spacing: 0; min-width: 1180px; }
+    table { width: 100%; border-collapse: separate; border-spacing: 0; min-width: 1260px; }
     th, td {
       padding: 12px 14px;
       border-bottom: 1px solid var(--line);
@@ -306,6 +728,7 @@ const indexHTML = `<!doctype html>
             <tr>
               <th>渠道</th>
               <th>平台</th>
+              <th>上游倍率</th>
               <th>优先级</th>
               <th>调度状态</th>
               <th>检测状态</th>
@@ -323,7 +746,7 @@ const indexHTML = `<!doctype html>
     <section class="panel jobs-panel">
       <div class="panel-title">
         <strong>最近检测记录</strong>
-        <span class="hint">详情包含脱敏请求、响应片段和 SSE 事件；刷新后保留内存中的最近 20 条。</span>
+        <span class="hint">详情只保留检测结果、错误、耗时、HTTP 状态和少量响应摘要；刷新后保留内存中的最近 20 条。</span>
       </div>
       <div class="table-wrap">
         <table>
@@ -488,7 +911,7 @@ const indexHTML = `<!doctype html>
     function render() {
       const keyword = document.getElementById('search').value.trim().toLowerCase();
       const filtered = accounts.filter(account => {
-        const text = [account.account_id, account.name, account.platform, account.priority, account.health_status, account.last_error_type, account.last_error_message].join(' ').toLowerCase();
+        const text = [account.account_id, account.name, account.platform, account.upstream_rate_multiplier, account.priority, account.health_status, account.last_error_type, account.last_error_message].join(' ').toLowerCase();
         return !keyword || text.includes(keyword);
       });
       const totals = successTotals(accounts);
@@ -502,7 +925,7 @@ const indexHTML = `<!doctype html>
 
       const target = document.getElementById('accounts');
       if (!filtered.length) {
-        target.innerHTML = '<tr><td colspan="9" class="empty">暂无渠道账号，或搜索条件没有匹配结果</td></tr>';
+        target.innerHTML = '<tr><td colspan="10" class="empty">暂无渠道账号，或搜索条件没有匹配结果</td></tr>';
         return;
       }
       target.innerHTML = filtered.map(account => {
@@ -512,6 +935,7 @@ const indexHTML = `<!doctype html>
         return '<tr>' +
           '<td><div class="name">' + esc(account.name || account.account_id) + '</div><div class="sub mono">ID ' + esc(account.account_id) + '</div></td>' +
           '<td><span class="badge running">' + esc(account.platform || '-') + '</span></td>' +
+          '<td><span class="badge paused">' + esc(formatRateMultiplier(account.upstream_rate_multiplier)) + '</span></td>' +
           '<td><span class="badge paused">P' + esc(formatPriority(account.priority)) + '</span></td>' +
           '<td><div class="status-stack"><span class="badge ' + (account.dispatch_enabled ? 'on' : 'off') + '">' + (account.dispatch_enabled ? '开启' : '关闭') + '</span><span class="sub">' + esc(account.status || '-') + '</span></div></td>' +
           '<td><div class="status-stack"><span class="badge ' + probeClass + '">' + probeText + '</span><span class="sub">' + esc(account.health_status || 'unknown') + '</span></div></td>' +
@@ -646,6 +1070,11 @@ const indexHTML = `<!doctype html>
     function formatPriority(value) {
       const priority = Number(value || 0);
       return priority > 0 ? priority : '-';
+    }
+    function formatRateMultiplier(value) {
+      const rate = value === undefined || value === null || value === '' ? 1 : Number(value);
+      if (!Number.isFinite(rate)) return '-';
+      return rate.toLocaleString(undefined, {maximumFractionDigits: 4}) + 'x';
     }
     function formatElapsed(value) {
       const ms = Number(value || 0);

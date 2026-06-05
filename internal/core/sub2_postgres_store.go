@@ -25,6 +25,7 @@ type sub2HealthExtra struct {
 	ProbeTotalCount      int        `json:"probe_total_count,omitempty"`
 	ProbeSuccessCount    int        `json:"probe_success_count,omitempty"`
 	ProbeErrorCount      int        `json:"probe_error_count,omitempty"`
+	ProbeHistory         []ProbeHistoryEntry `json:"probe_history,omitempty"`
 	LastProbeAt          *time.Time `json:"last_probe_at,omitempty"`
 	LastErrorType        string     `json:"last_error_type,omitempty"`
 	LastErrorCode        string     `json:"last_error_code,omitempty"`
@@ -88,13 +89,24 @@ func (s *Sub2PostgresStore) UpsertAccount(ctx context.Context, account Account) 
 
 func (s *Sub2PostgresStore) ListAccounts(ctx context.Context) ([]Account, error) {
 	rows, err := s.pool.Query(ctx, `
-		select id, name, platform, status, schedulable, priority, concurrency,
-		       error_message, created_at, updated_at, credentials, extra
-		from accounts
-		where deleted_at is null
-		  and name not like '%@%'
-		  and coalesce(credentials->>'api_key', '') <> ''
-		order by id desc
+		select a.id, a.name, a.platform, a.status, a.schedulable, a.priority, coalesce(a.rate_multiplier, 1)::float8, a.concurrency,
+		       a.error_message, a.created_at, a.updated_at, a.credentials, a.extra,
+		       coalesce((
+		         select jsonb_agg(group_name order by group_sort, group_name)
+		         from (
+		           select distinct g.name as group_name, coalesce(g.sort_order, 0) as group_sort
+		           from account_groups ag
+		           join "groups" g on g.id = ag.group_id
+		           where ag.account_id = a.id
+		             and g.deleted_at is null
+		             and coalesce(g.name, '') <> ''
+		         ) group_names
+		       ), '[]'::jsonb) as group_names
+		from accounts a
+		where a.deleted_at is null
+		  and a.name not like '%@%'
+		  and coalesce(a.credentials->>'api_key', '') <> ''
+		order by a.id desc
 		limit 2000`)
 	if err != nil {
 		return nil, err
@@ -118,13 +130,24 @@ func (s *Sub2PostgresStore) GetAccount(ctx context.Context, accountID string) (A
 		return Account{}, false, nil
 	}
 	row := s.pool.QueryRow(ctx, `
-		select id, name, platform, status, schedulable, priority, concurrency,
-		       error_message, created_at, updated_at, credentials, extra
-		from accounts
-		where id = $1
-		  and deleted_at is null
-		  and name not like '%@%'
-		  and coalesce(credentials->>'api_key', '') <> ''`, id)
+		select a.id, a.name, a.platform, a.status, a.schedulable, a.priority, coalesce(a.rate_multiplier, 1)::float8, a.concurrency,
+		       a.error_message, a.created_at, a.updated_at, a.credentials, a.extra,
+		       coalesce((
+		         select jsonb_agg(group_name order by group_sort, group_name)
+		         from (
+		           select distinct g.name as group_name, coalesce(g.sort_order, 0) as group_sort
+		           from account_groups ag
+		           join "groups" g on g.id = ag.group_id
+		           where ag.account_id = a.id
+		             and g.deleted_at is null
+		             and coalesce(g.name, '') <> ''
+		         ) group_names
+		       ), '[]'::jsonb) as group_names
+		from accounts a
+		where a.id = $1
+		  and a.deleted_at is null
+		  and a.name not like '%@%'
+		  and coalesce(a.credentials->>'api_key', '') <> ''`, id)
 	account, err := scanSub2Account(row)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -145,6 +168,7 @@ func (s *Sub2PostgresStore) UpdateAccount(ctx context.Context, account Account) 
 		ProbeTotalCount: account.ProbeTotalCount,
 		ProbeSuccessCount: account.ProbeSuccessCount,
 		ProbeErrorCount: account.ProbeErrorCount,
+		ProbeHistory: account.ProbeHistory,
 		LastProbeAt: account.LastProbeAt,
 		LastErrorType: account.LastErrorType,
 		LastErrorCode: account.LastErrorCode,
@@ -195,14 +219,25 @@ func (s *Sub2PostgresStore) UpdateAccount(ctx context.Context, account Account) 
 
 func (s *Sub2PostgresStore) ListCandidates(ctx context.Context, req SelectRequest) ([]Account, error) {
 	rows, err := s.pool.Query(ctx, `
-		select id, name, platform, status, schedulable, priority, concurrency,
-		       error_message, created_at, updated_at, credentials, extra
-		from accounts
-		where deleted_at is null
-		  and platform = $1
-		  and name not like '%@%'
-		  and coalesce(credentials->>'api_key', '') <> ''
-		order by priority desc, id desc
+		select a.id, a.name, a.platform, a.status, a.schedulable, a.priority, coalesce(a.rate_multiplier, 1)::float8, a.concurrency,
+		       a.error_message, a.created_at, a.updated_at, a.credentials, a.extra,
+		       coalesce((
+		         select jsonb_agg(group_name order by group_sort, group_name)
+		         from (
+		           select distinct g.name as group_name, coalesce(g.sort_order, 0) as group_sort
+		           from account_groups ag
+		           join "groups" g on g.id = ag.group_id
+		           where ag.account_id = a.id
+		             and g.deleted_at is null
+		             and coalesce(g.name, '') <> ''
+		         ) group_names
+		       ), '[]'::jsonb) as group_names
+		from accounts a
+		where a.deleted_at is null
+		  and a.platform = $1
+		  and a.name not like '%@%'
+		  and coalesce(a.credentials->>'api_key', '') <> ''
+		order by a.priority desc, a.id desc
 		limit 2000`, req.Platform)
 	if err != nil {
 		return nil, err
@@ -222,18 +257,29 @@ func (s *Sub2PostgresStore) ListCandidates(ctx context.Context, req SelectReques
 
 func (s *Sub2PostgresStore) ListProbeDue(ctx context.Context) ([]Account, error) {
 	rows, err := s.pool.Query(ctx, `
-		select id, name, platform, status, schedulable, priority, concurrency,
-		       error_message, created_at, updated_at, credentials, extra
-		from accounts
-		where deleted_at is null
-		  and name not like '%@%'
-		  and coalesce(credentials->>'api_key', '') <> ''
-		  and coalesce((extra->'aad_health'->>'probe_paused')::boolean, false) = false
+		select a.id, a.name, a.platform, a.status, a.schedulable, a.priority, coalesce(a.rate_multiplier, 1)::float8, a.concurrency,
+		       a.error_message, a.created_at, a.updated_at, a.credentials, a.extra,
+		       coalesce((
+		         select jsonb_agg(group_name order by group_sort, group_name)
+		         from (
+		           select distinct g.name as group_name, coalesce(g.sort_order, 0) as group_sort
+		           from account_groups ag
+		           join "groups" g on g.id = ag.group_id
+		           where ag.account_id = a.id
+		             and g.deleted_at is null
+		             and coalesce(g.name, '') <> ''
+		         ) group_names
+		       ), '[]'::jsonb) as group_names
+		from accounts a
+		where a.deleted_at is null
+		  and a.name not like '%@%'
+		  and coalesce(a.credentials->>'api_key', '') <> ''
+		  and coalesce((a.extra->'aad_health'->>'probe_paused')::boolean, false) = false
 		  and (
-		    (extra->'aad_health'->>'next_probe_at') is not null
-		    and (extra->'aad_health'->>'next_probe_at')::timestamptz <= now()
+		    (a.extra->'aad_health'->>'next_probe_at') is not null
+		    and (a.extra->'aad_health'->>'next_probe_at')::timestamptz <= now()
 		  )
-		order by id asc
+		order by a.id asc
 		limit 200`)
 	if err != nil {
 		return nil, err
@@ -260,11 +306,12 @@ func scanSub2Account(row sub2Scanner) (Account, error) {
 	var name, platform, status string
 	var schedulable bool
 	var priority, concurrency int
+	var rateMultiplier float64
 	var errorMessage *string
 	var createdAt, updatedAt time.Time
-	var credentialsBytes, extraBytes []byte
+	var credentialsBytes, extraBytes, groupNamesBytes []byte
 
-	if err := row.Scan(&id, &name, &platform, &status, &schedulable, &priority, &concurrency, &errorMessage, &createdAt, &updatedAt, &credentialsBytes, &extraBytes); err != nil {
+	if err := row.Scan(&id, &name, &platform, &status, &schedulable, &priority, &rateMultiplier, &concurrency, &errorMessage, &createdAt, &updatedAt, &credentialsBytes, &extraBytes, &groupNamesBytes); err != nil {
 		return Account{}, err
 	}
 
@@ -272,9 +319,11 @@ func scanSub2Account(row sub2Scanner) (Account, error) {
 		AccountID: strconv.FormatInt(id, 10),
 		Name: name,
 		Platform: platform,
+		GroupNames: parseSub2GroupNames(groupNamesBytes),
 		Status: status,
 		DispatchEnabled: schedulable,
 		Priority: priority,
+		UpstreamRateMultiplier: rateMultiplier,
 		Weight: 100,
 		MaxConcurrency: concurrency,
 		CreatedAt: createdAt,
@@ -307,6 +356,22 @@ func parseSub2Credentials(credentialsBytes []byte) sub2Credentials {
 	var credentials sub2Credentials
 	_ = json.Unmarshal(credentialsBytes, &credentials)
 	return credentials
+}
+
+func parseSub2GroupNames(groupNamesBytes []byte) []string {
+	names := []string{}
+	_ = json.Unmarshal(groupNamesBytes, &names)
+	out := make([]string, 0, len(names))
+	seen := map[string]bool{}
+	for _, name := range names {
+		name = strings.TrimSpace(name)
+		if name == "" || seen[name] {
+			continue
+		}
+		out = append(out, name)
+		seen[name] = true
+	}
+	return out
 }
 
 func applyAutoProbe(account *Account) {
@@ -350,6 +415,7 @@ func applySub2Health(account *Account, health sub2HealthExtra) {
 	account.ProbeTotalCount = health.ProbeTotalCount
 	account.ProbeSuccessCount = health.ProbeSuccessCount
 	account.ProbeErrorCount = health.ProbeErrorCount
+	account.ProbeHistory = health.ProbeHistory
 	account.LastProbeAt = health.LastProbeAt
 	account.LastErrorType = health.LastErrorType
 	account.LastErrorCode = health.LastErrorCode
