@@ -600,6 +600,15 @@ const indexHTML = `<!doctype html>
     .name { font-weight: 800; color: #0f172a; }
     .sub { color: var(--muted); font-size: 12px; margin-top: 3px; }
     .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+    .elapsed-cell { min-width: 240px; }
+    .elapsed-log {
+      color: var(--muted);
+      display: inline;
+      font-size: 12px;
+      line-height: 1.35;
+      margin-left: 8px;
+      white-space: normal;
+    }
     .badge {
       display: inline-flex;
       align-items: center;
@@ -957,13 +966,14 @@ const indexHTML = `<!doctype html>
       target.innerHTML = jobs.map(job => {
         const resultText = job.status === 'running' ? '检测中' : (job.success ? '成功' : '失败');
         const errorText = job.error_message || job.error || job.error_type || '-';
+        const logSummary = formatJobLogSummary(job);
         return '<tr>' +
           '<td class="mono">' + formatTime(job.started_at) + '</td>' +
           '<td><div class="name">' + esc(job.name || job.account_id) + '</div><div class="sub mono">ID ' + esc(job.account_id) + '</div></td>' +
           '<td>' + esc(formatTrigger(job.trigger)) + '</td>' +
           '<td><span class="badge ' + esc(job.status) + '">' + esc(formatJobStatus(job.status)) + '</span></td>' +
           '<td>' + esc(resultText) + '</td>' +
-          '<td class="mono">' + formatElapsed(job.elapsed_ms) + '</td>' +
+          '<td class="elapsed-cell"><span class="mono">' + formatElapsed(job.elapsed_ms) + '</span>' + (logSummary ? '<span class="elapsed-log">' + esc(logSummary) + '</span>' : '') + '</td>' +
           '<td><div>' + esc(job.error_type || '-') + '</div><div class="sub">' + esc(errorText) + '</div></td>' +
           '<td><button data-job-id="' + escAttr(job.job_id) + '" onclick="showJobDetail(this.dataset.jobId)">详情</button></td>' +
           '</tr>';
@@ -1080,6 +1090,42 @@ const indexHTML = `<!doctype html>
       const ms = Number(value || 0);
       if (ms < 1000) return ms + 'ms';
       return Math.round(ms / 1000) + 's';
+    }
+    function formatJobLogSummary(job) {
+      const log = job.log || job['日志'] || {};
+      const parts = [];
+      const httpCode = log.http_status_code || log.status_code || log['HTTP状态码'];
+      const httpStatus = log.http_status || log.status || log['HTTP状态'];
+      const lastEvent = log.last_event || log.event || log['最后事件'];
+      const responseSummary = log.response_summary || log.summary || log['响应摘要'];
+      const fallback = job.error_message || job.error || job.error_type || '';
+
+      if (httpCode) {
+        parts.push('HTTP ' + httpCode);
+      } else if (httpStatus) {
+        parts.push(compactJobLogText(httpStatus, 18));
+      }
+      if (lastEvent) parts.push(compactJobLogText(lastEvent, 16));
+      if (responseSummary) {
+        parts.push(compactJobLogText(responseSummary, 42));
+      } else if (job.status === 'running') {
+        parts.push('等待返回');
+      } else if (fallback) {
+        parts.push(compactJobLogText(fallback, 42));
+      }
+      return parts.filter(Boolean).slice(0, 3).join(' · ');
+    }
+    function compactJobLogText(value, limit) {
+      let text = String(value ?? '').replace(/\s+/g, ' ').trim();
+      text = text
+        .replace(/^检测成功，?sub2api 返回完成事件。?$/, '成功')
+        .replace(/^检测成功。?$/, '成功')
+        .replace(/^检测失败[:：]\s*/, '')
+        .replace(/^检测失败，错误类型[:：]\s*/, '')
+        .replace(/^检测失败，响应摘要[:：]\s*/, '响应：')
+        .replace(/^检测未通过。?$/, '未通过');
+      if (limit > 0 && text.length > limit) return text.slice(0, limit) + '...';
+      return text;
     }
     function formatJobStatus(status) {
       if (status === 'running') return '检测中';
